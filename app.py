@@ -174,7 +174,9 @@ def load_and_prepare(file_bytes, postcode_col, gifts_col, gift_date_col, engagem
     return donors
 
 
-def build_map(donors, gifts_col, gift_date_col, engagement_date_col, selected_donor_id=None):
+def build_map(donors, gifts_col, gift_date_col, engagement_date_col, selected_donor_ids=None):
+    selected_donor_ids = set(selected_donor_ids or [])
+
     m = folium.Map(location=LONDON_CENTER, zoom_start=11, tiles="CartoDB positron")
 
     values = np.log1p(donors[gifts_col].fillna(0)) if len(donors) else pd.Series([0, 1])
@@ -192,7 +194,7 @@ def build_map(donors, gifts_col, gift_date_col, engagement_date_col, selected_do
         colour_value = np.log1p(gifts_value)
         color = colormap(colour_value)
 
-        selected = selected_donor_id == row["_donor_id"]
+        selected = row["_donor_id"] in selected_donor_ids
         marker_color = "#111111" if selected else color
         marker_radius = 11 if selected else 6
         marker_weight = 4 if selected else 1
@@ -233,6 +235,13 @@ def ranked_table(donors, sort_col, display_col_name, ascending=False):
     return ranked, view
 
 
+def update_selected_ids(event, source_df, selected_ids):
+    if hasattr(event, "selection") and event.selection.rows:
+        for row_idx in event.selection.rows:
+            selected_ids.add(source_df.iloc[row_idx]["_donor_id"])
+    return selected_ids
+
+
 st.title("London donor map")
 
 uploaded = st.file_uploader("Upload your CSV", type=["csv"])
@@ -255,6 +264,11 @@ with st.sidebar:
     gift_date_col = st.text_input("Last gift date column", value="Last Gift Date")
     engagement_date_col = st.text_input("Last engagement date column", value="Last Engagement Date")
 
+    if st.button("Clear all selections"):
+        st.session_state.selected_ids_top_gifts = set()
+        st.session_state.selected_ids_top_recent_gift = set()
+        st.session_state.selected_ids_top_recent_engagement = set()
+
 try:
     donors = load_and_prepare(
         file_bytes,
@@ -275,20 +289,16 @@ top_gifts_ranked, top_gifts_view = ranked_table(donors, gifts_col, gifts_col, as
 top_recent_gift_ranked, top_recent_gift_view = ranked_table(donors, gift_date_col, gift_date_col, ascending=False)
 top_recent_engagement_ranked, top_recent_engagement_view = ranked_table(donors, engagement_date_col, engagement_date_col, ascending=False)
 
-if "selected_name" not in st.session_state:
-    st.session_state.selected_name = donors["Full Name"].iloc[0]
+if "selected_ids_top_gifts" not in st.session_state:
+    st.session_state.selected_ids_top_gifts = set()
 
-if st.session_state.selected_name not in donors["Full Name"].values:
-    st.session_state.selected_name = donors["Full Name"].iloc[0]
+if "selected_ids_top_recent_gift" not in st.session_state:
+    st.session_state.selected_ids_top_recent_gift = set()
 
+if "selected_ids_top_recent_engagement" not in st.session_state:
+    st.session_state.selected_ids_top_recent_engagement = set()
 
-def update_selection_from_event(event, source_df):
-    if hasattr(event, "selection") and event.selection.rows:
-        row_idx = event.selection.rows[0]
-        st.session_state.selected_name = source_df.iloc[row_idx]["Full Name"]
-
-
-st.caption("Click a row in any table to highlight that donor on the map.")
+st.caption("Click one or more rows in any tab to highlight those donors on the map.")
 
 map_col, table_col = st.columns([1.55, 1])
 
@@ -307,10 +317,14 @@ with table_col:
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
-            selection_mode="single-row",
+            selection_mode="multi-row",
             key="top_gifts_table",
         )
-        update_selection_from_event(gifts_event, top_gifts_ranked)
+        st.session_state.selected_ids_top_gifts = update_selected_ids(
+            gifts_event,
+            top_gifts_ranked,
+            st.session_state.selected_ids_top_gifts,
+        )
 
     with tab2:
         recent_gift_event = st.dataframe(
@@ -318,10 +332,14 @@ with table_col:
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
-            selection_mode="single-row",
+            selection_mode="multi-row",
             key="top_recent_gift_table",
         )
-        update_selection_from_event(recent_gift_event, top_recent_gift_ranked)
+        st.session_state.selected_ids_top_recent_gift = update_selected_ids(
+            recent_gift_event,
+            top_recent_gift_ranked,
+            st.session_state.selected_ids_top_recent_gift,
+        )
 
     with tab3:
         recent_engagement_event = st.dataframe(
@@ -329,14 +347,26 @@ with table_col:
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
-            selection_mode="single-row",
+            selection_mode="multi-row",
             key="top_recent_engagement_table",
         )
-        update_selection_from_event(recent_engagement_event, top_recent_engagement_ranked)
+        st.session_state.selected_ids_top_recent_engagement = update_selected_ids(
+            recent_engagement_event,
+            top_recent_engagement_ranked,
+            st.session_state.selected_ids_top_recent_engagement,
+        )
 
-    st.markdown(f"**Selected donor:** {st.session_state.selected_name}")
+    selected_ids = (
+        set(st.session_state.selected_ids_top_gifts)
+        | set(st.session_state.selected_ids_top_recent_gift)
+        | set(st.session_state.selected_ids_top_recent_engagement)
+    )
 
-selected_donor_id = donors.loc[donors["Full Name"] == st.session_state.selected_name, "_donor_id"].iloc[0]
+    selected_names = donors.loc[donors["_donor_id"].isin(selected_ids), "Full Name"].tolist()
+    if selected_names:
+        st.markdown("**Selected donors:** " + ", ".join(selected_names))
+    else:
+        st.markdown("**Selected donors:** none")
 
 with map_col:
     st.subheader("Map")
@@ -345,6 +375,6 @@ with map_col:
         gifts_col=gifts_col,
         gift_date_col=gift_date_col,
         engagement_date_col=engagement_date_col,
-        selected_donor_id=selected_donor_id,
+        selected_donor_ids=selected_ids,
     )
     st_folium(m, width=1100, height=720)
