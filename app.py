@@ -7,6 +7,7 @@ import folium
 import pgeocode
 import streamlit as st
 
+from io import BytesIO
 from branca.colormap import linear
 from streamlit_folium import st_folium
 
@@ -238,7 +239,8 @@ if uploaded is None:
 with st.sidebar:
     st.header("Columns")
 
-    df_preview = pd.read_csv(uploaded, encoding="cp1252")
+    file_bytes = uploaded.getvalue()
+    df_preview = pd.read_csv(BytesIO(file_bytes), encoding="cp1252")
     df_preview.columns = df_preview.columns.str.strip()
 
     default_postcode = detect_postcode_column(df_preview)
@@ -254,7 +256,7 @@ with st.sidebar:
     )
 
 try:
-    donors = load_and_prepare(uploaded, postcode_col, gifts_col, gift_date_col, engagement_date_col)
+    donors = load_and_prepare(BytesIO(file_bytes), postcode_col, gifts_col, gift_date_col, engagement_date_col)
 except Exception as e:
     st.error(f"Could not load the file: {e}")
     st.stop()
