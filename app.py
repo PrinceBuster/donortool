@@ -1,5 +1,6 @@
 import re
 import math
+from io import BytesIO
 
 import numpy as np
 import pandas as pd
@@ -7,7 +8,6 @@ import folium
 import pgeocode
 import streamlit as st
 
-from io import BytesIO
 from branca.colormap import linear
 from streamlit_folium import st_folium
 
@@ -106,13 +106,14 @@ def get_nomi():
     return pgeocode.Nominatim("gb")
 
 
-def load_and_prepare(uploaded_file, postcode_col, gifts_col, gift_date_col, engagement_date_col):
-    df = pd.read_csv(uploaded_file, encoding="cp1252")
+def load_and_prepare(file_bytes, postcode_col, gifts_col, gift_date_col, engagement_date_col):
+    df = pd.read_csv(BytesIO(file_bytes), encoding="cp1252")
     df.columns = df.columns.str.strip()
 
-    for col in ["First Name", "Last Name", postcode_col, gifts_col, gift_date_col, engagement_date_col]:
-        if col not in df.columns:
-            raise KeyError(f"Missing column: {col}")
+    required = ["First Name", "Last Name", postcode_col, gifts_col, gift_date_col, engagement_date_col]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing column(s): {missing}")
 
     df["First Name"] = df["First Name"].fillna("").astype(str).str.strip()
     df["Last Name"] = df["Last Name"].fillna("").astype(str).str.strip()
@@ -173,14 +174,6 @@ def load_and_prepare(uploaded_file, postcode_col, gifts_col, gift_date_col, enga
     return donors
 
 
-def top10_table(donors, sort_col, ascending=False):
-    out = donors.dropna(subset=[sort_col]).sort_values(sort_col, ascending=ascending).head(10).copy()
-    out = out[["Full Name"]].reset_index(drop=True)
-    out.index = np.arange(1, len(out) + 1)
-    out.index.name = "Rank"
-    return out
-
-
 def build_map(donors, gifts_col, gift_date_col, engagement_date_col, selected_donor_id=None):
     m = folium.Map(location=LONDON_CENTER, zoom_start=11, tiles="CartoDB positron")
 
@@ -228,6 +221,18 @@ def build_map(donors, gifts_col, gift_date_col, engagement_date_col, selected_do
     return m
 
 
+def ranked_table(donors, sort_col, display_col_name, ascending=False):
+    ranked = (
+        donors.dropna(subset=[sort_col])
+              .sort_values(sort_col, ascending=ascending)
+              .head(10)
+              .reset_index(drop=True)
+    )
+    view = ranked[["Full Name", sort_col]].copy()
+    view.columns = ["Full Name", display_col_name]
+    return ranked, view
+
+
 st.title("London donor map")
 
 uploaded = st.file_uploader("Upload your CSV", type=["csv"])
@@ -236,27 +241,28 @@ if uploaded is None:
     st.info("Upload the CSV to begin.")
     st.stop()
 
+file_bytes = uploaded.getvalue()
+
 with st.sidebar:
     st.header("Columns")
 
-    file_bytes = uploaded.getvalue()
-    df_preview = pd.read_csv(BytesIO(file_bytes), encoding="cp1252")
-    df_preview.columns = df_preview.columns.str.strip()
+    preview_df = pd.read_csv(BytesIO(file_bytes), encoding="cp1252")
+    preview_df.columns = preview_df.columns.str.strip()
 
-    default_postcode = detect_postcode_column(df_preview)
+    default_postcode = detect_postcode_column(preview_df)
     postcode_col = st.text_input("Postcode column", value=default_postcode)
     gifts_col = st.text_input("Gift total column", value="Total Gifts - GBP")
     gift_date_col = st.text_input("Last gift date column", value="Last Gift Date")
     engagement_date_col = st.text_input("Last engagement date column", value="Last Engagement Date")
 
-    highlight_mode = st.radio(
-        "Highlight donor from",
-        ["All donors", "Top gifts", "Top recent gift", "Top recent engagement"],
-        index=0,
-    )
-
 try:
-    donors = load_and_prepare(BytesIO(file_bytes), postcode_col, gifts_col, gift_date_col, engagement_date_col)
+    donors = load_and_prepare(
+        file_bytes,
+        postcode_col,
+        gifts_col,
+        gift_date_col,
+        engagement_date_col,
+    )
 except Exception as e:
     st.error(f"Could not load the file: {e}")
     st.stop()
@@ -265,50 +271,28 @@ if donors.empty:
     st.warning("No valid London postcodes were found after cleaning and filtering.")
     st.stop()
 
-top_gifts_df = top10_table(donors, gifts_col, ascending=False)
-top_recent_gift_df = top10_table(donors, gift_date_col, ascending=False)
-top_recent_engagement_df = top10_table(donors, engagement_date_col, ascending=False)
+top_gifts_ranked, top_gifts_view = ranked_table(donors, gifts_col, gifts_col, ascending=False)
+top_recent_gift_ranked, top_recent_gift_view = ranked_table(donors, gift_date_col, gift_date_col, ascending=False)
+top_recent_engagement_ranked, top_recent_engagement_view = ranked_table(donors, engagement_date_col, engagement_date_col, ascending=False)
 
 if "selected_name" not in st.session_state:
     st.session_state.selected_name = donors["Full Name"].iloc[0]
 
-all_names = donors["Full Name"].tolist()
+if st.session_state.selected_name not in donors["Full Name"].values:
+    st.session_state.selected_name = donors["Full Name"].iloc[0]
 
-if highlight_mode == "All donors":
-    name_options = all_names
-elif highlight_mode == "Top gifts":
-    name_options = top_gifts_df["Full Name"].tolist()
-elif highlight_mode == "Top recent gift":
-    name_options = top_recent_gift_df["Full Name"].tolist()
-else:
-    name_options = top_recent_engagement_df["Full Name"].tolist()
 
-if st.session_state.selected_name not in name_options:
-    st.session_state.selected_name = name_options[0]
+def update_selection_from_event(event, source_df):
+    if hasattr(event, "selection") and event.selection.rows:
+        row_idx = event.selection.rows[0]
+        st.session_state.selected_name = source_df.iloc[row_idx]["Full Name"]
 
-selected_name = st.sidebar.selectbox(
-    "Choose donor to highlight",
-    options=name_options,
-    index=name_options.index(st.session_state.selected_name),
-)
 
-st.session_state.selected_name = selected_name
-selected_donor_id = donors.loc[donors["Full Name"] == selected_name, "_donor_id"].iloc[0]
+st.caption("Click a row in any table to highlight that donor on the map.")
 
-left, right = st.columns([1.5, 1])
+map_col, table_col = st.columns([1.55, 1])
 
-with left:
-    st.subheader("Map")
-    m = build_map(
-        donors=donors,
-        gifts_col=gifts_col,
-        gift_date_col=gift_date_col,
-        engagement_date_col=engagement_date_col,
-        selected_donor_id=selected_donor_id,
-    )
-    st_folium(m, width=1100, height=720)
-
-with right:
+with table_col:
     st.subheader("Top 10 rankings")
 
     tab1, tab2, tab3 = st.tabs([
@@ -318,13 +302,49 @@ with right:
     ])
 
     with tab1:
-        st.dataframe(top_gifts_df, use_container_width=True, height=360)
-        st.caption("Use the sidebar dropdown to highlight a donor from this list.")
+        gifts_event = st.dataframe(
+            top_gifts_view,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="top_gifts_table",
+        )
+        update_selection_from_event(gifts_event, top_gifts_ranked)
 
     with tab2:
-        st.dataframe(top_recent_gift_df, use_container_width=True, height=360)
-        st.caption("Use the sidebar dropdown to highlight a donor from this list.")
+        recent_gift_event = st.dataframe(
+            top_recent_gift_view,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="top_recent_gift_table",
+        )
+        update_selection_from_event(recent_gift_event, top_recent_gift_ranked)
 
     with tab3:
-        st.dataframe(top_recent_engagement_df, use_container_width=True, height=360)
-        st.caption("Use the sidebar dropdown to highlight a donor from this list.")
+        recent_engagement_event = st.dataframe(
+            top_recent_engagement_view,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="top_recent_engagement_table",
+        )
+        update_selection_from_event(recent_engagement_event, top_recent_engagement_ranked)
+
+    st.markdown(f"**Selected donor:** {st.session_state.selected_name}")
+
+selected_donor_id = donors.loc[donors["Full Name"] == st.session_state.selected_name, "_donor_id"].iloc[0]
+
+with map_col:
+    st.subheader("Map")
+    m = build_map(
+        donors=donors,
+        gifts_col=gifts_col,
+        gift_date_col=gift_date_col,
+        engagement_date_col=engagement_date_col,
+        selected_donor_id=selected_donor_id,
+    )
+    st_folium(m, width=1100, height=720)
