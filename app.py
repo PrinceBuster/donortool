@@ -242,6 +242,12 @@ def update_selected_ids(event, source_df, selected_ids):
     return selected_ids
 
 
+def remove_donor_from_all_selected(donor_id):
+    st.session_state.selected_ids_top_gifts.discard(donor_id)
+    st.session_state.selected_ids_top_recent_gift.discard(donor_id)
+    st.session_state.selected_ids_top_recent_engagement.discard(donor_id)
+
+
 st.title("London donor map")
 
 uploaded = st.file_uploader("Upload your CSV", type=["csv"])
@@ -362,11 +368,37 @@ with table_col:
         | set(st.session_state.selected_ids_top_recent_engagement)
     )
 
-    selected_names = donors.loc[donors["_donor_id"].isin(selected_ids), "Full Name"].tolist()
-    if selected_names:
-        st.markdown("**Selected donors:** " + ", ".join(selected_names))
+    st.markdown("### Selected donors")
+
+    if selected_ids:
+        selected_names = donors.loc[donors["_donor_id"].isin(selected_ids), "Full Name"].tolist()
+
+        chip_cols = st.columns(min(3, len(selected_ids)))
+        for idx, donor_id in enumerate(list(selected_ids)):
+            donor_name = donors.loc[donors["_donor_id"] == donor_id, "Full Name"].iloc[0]
+            with chip_cols[idx % len(chip_cols)]:
+                st.markdown(
+                    f"""
+                    <div style="
+                        border: 1px solid #d0d7de;
+                        border-radius: 999px;
+                        padding: 8px 12px;
+                        margin-bottom: 8px;
+                        background: #f8f9fb;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;">
+                        <span style="font-size: 13px;">{donor_name}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove", key=f"remove_{donor_id}"):
+                    remove_donor_from_all_selected(donor_id)
+                    st.rerun()
     else:
-        st.markdown("**Selected donors:** none")
+        st.markdown("None selected")
 
 with map_col:
     st.subheader("Map")
