@@ -1,5 +1,6 @@
 import re
 import math
+import html
 from io import BytesIO
 
 import numpy as np
@@ -88,8 +89,8 @@ def build_popup_html(row, gifts_col, gift_date_col, engagement_date_col):
     for label, value in fields:
         if value != "" and pd.notna(value):
             rows.append(
-                f"<tr><th style='text-align:left;padding-right:10px;vertical-align:top;'>{label}</th>"
-                f"<td>{value}</td></tr>"
+                f"<tr><th style='text-align:left;padding-right:10px;vertical-align:top;'>{html.escape(str(label))}</th>"
+                f"<td>{html.escape(str(value))}</td></tr>"
             )
 
     return f"""
@@ -235,18 +236,24 @@ def ranked_table(donors, sort_col, display_col_name, ascending=False):
     return ranked, view
 
 
-def update_selected_ids(event, source_df, selected_ids):
-    if hasattr(event, "selection") and event.selection.rows:
-        for row_idx in event.selection.rows:
-            selected_ids.add(source_df.iloc[row_idx]["_donor_id"])
-    return selected_ids
+def render_rank_editor(ranked_df, view_df, widget_key, selected_ids):
+    editor_df = view_df.copy()
+    editor_df.insert(0, "Select", ranked_df["_donor_id"].isin(selected_ids))
 
+    edited = st.data_editor(
+        editor_df,
+        key=widget_key,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "Select": st.column_config.CheckboxColumn("Select"),
+        },
+        disabled=[c for c in editor_df.columns if c != "Select"],
+    )
 
-def remove_donor_from_all_selected(donor_id):
-    st.session_state.selected_ids_top_gifts.discard(donor_id)
-    st.session_state.selected_ids_top_recent_gift.discard(donor_id)
-    st.session_state.selected_ids_top_recent_engagement.discard(donor_id)
-    st.rerun()
+    selected_rows = edited.index[edited["Select"].fillna(False)].tolist()
+    return {ranked_df.iloc[i]["_donor_id"] for i in selected_rows}
 
 
 st.title("London donor map")
@@ -272,9 +279,11 @@ with st.sidebar:
     engagement_date_col = st.text_input("Last engagement date column", value="Last Engagement Date")
 
     if st.button("Clear all selections"):
-        st.session_state.selected_ids_top_gifts = set()
-        st.session_state.selected_ids_top_recent_gift = set()
-        st.session_state.selected_ids_top_recent_engagement = set()
+        st.session_state.selected_ids = set()
+        st.rerun()
+
+if "selected_ids" not in st.session_state:
+    st.session_state.selected_ids = set()
 
 try:
     donors = load_and_prepare(
@@ -296,16 +305,7 @@ top_gifts_ranked, top_gifts_view = ranked_table(donors, gifts_col, gifts_col, as
 top_recent_gift_ranked, top_recent_gift_view = ranked_table(donors, gift_date_col, gift_date_col, ascending=False)
 top_recent_engagement_ranked, top_recent_engagement_view = ranked_table(donors, engagement_date_col, engagement_date_col, ascending=False)
 
-if "selected_ids_top_gifts" not in st.session_state:
-    st.session_state.selected_ids_top_gifts = set()
-
-if "selected_ids_top_recent_gift" not in st.session_state:
-    st.session_state.selected_ids_top_recent_gift = set()
-
-if "selected_ids_top_recent_engagement" not in st.session_state:
-    st.session_state.selected_ids_top_recent_engagement = set()
-
-st.caption("Click one or more rows in any tab to highlight those donors on the map.")
+st.caption("Tick one or more rows in any tab to highlight those donors on the map.")
 
 map_col, table_col = st.columns([1.55, 1])
 
@@ -319,94 +319,80 @@ with table_col:
     ])
 
     with tab1:
-        gifts_event = st.dataframe(
-            top_gifts_view,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row",
-            key="top_gifts_table",
-        )
-        st.session_state.selected_ids_top_gifts = update_selected_ids(
-            gifts_event,
+        selected_from_gifts = render_rank_editor(
             top_gifts_ranked,
-            st.session_state.selected_ids_top_gifts,
+            top_gifts_view,
+            "top_gifts_table",
+            st.session_state.selected_ids,
         )
 
     with tab2:
-        recent_gift_event = st.dataframe(
-            top_recent_gift_view,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row",
-            key="top_recent_gift_table",
-        )
-        st.session_state.selected_ids_top_recent_gift = update_selected_ids(
-            recent_gift_event,
+        selected_from_recent_gift = render_rank_editor(
             top_recent_gift_ranked,
-            st.session_state.selected_ids_top_recent_gift,
+            top_recent_gift_view,
+            "top_recent_gift_table",
+            st.session_state.selected_ids,
         )
 
     with tab3:
-        recent_engagement_event = st.dataframe(
-            top_recent_engagement_view,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row",
-            key="top_recent_engagement_table",
-        )
-        st.session_state.selected_ids_top_recent_engagement = update_selected_ids(
-            recent_engagement_event,
+        selected_from_recent_engagement = render_rank_editor(
             top_recent_engagement_ranked,
-            st.session_state.selected_ids_top_recent_engagement,
+            top_recent_engagement_view,
+            "top_recent_engagement_table",
+            st.session_state.selected_ids,
         )
 
-    selected_ids = (
-        set(st.session_state.selected_ids_top_gifts)
-        | set(st.session_state.selected_ids_top_recent_gift)
-        | set(st.session_state.selected_ids_top_recent_engagement)
+    combined_selected = (
+        set(selected_from_gifts)
+        | set(selected_from_recent_gift)
+        | set(selected_from_recent_engagement)
     )
+
+    if combined_selected != st.session_state.selected_ids:
+        st.session_state.selected_ids = combined_selected
+        st.rerun()
+
+    selected_ids = st.session_state.selected_ids
 
     st.markdown("### Selected donors")
 
-if selected_ids:
-    selected_ids_list = sorted(
-        selected_ids,
-        key=lambda did: donors.loc[donors["_donor_id"] == did, "Full Name"].iloc[0]
-    )
+    if selected_ids:
+        selected_list = sorted(
+            selected_ids,
+            key=lambda did: donors.loc[donors["_donor_id"] == did, "Full Name"].iloc[0]
+        )
 
-    chip_cols = st.columns(len(selected_ids_list))
+        n_cols = min(4, len(selected_list))
+        chip_cols = st.columns(n_cols)
 
-    for i, donor_id in enumerate(selected_ids_list):
-        donor_name = donors.loc[donors["_donor_id"] == donor_id, "Full Name"].iloc[0]
-
-        with chip_cols[i]:
-            st.markdown(
-                f"""
-                <div style="
-                    background: #eef2f7;
-                    border: 1px solid #cfd8e3;
-                    border-radius: 999px;
-                    padding: 8px 10px;
-                    color: #111111;
-                    font-size: 13px;
-                    font-weight: 600;
-                    text-align: center;
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;">
-                    {donor_name}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if st.button("×", key=f"remove_{donor_id}", help=f"Remove {donor_name}"):
-                remove_donor_from_all_selected(donor_id)
-else:
-    st.markdown("None selected")
+        for i, donor_id in enumerate(selected_list):
+            donor_name = donors.loc[donors["_donor_id"] == donor_id, "Full Name"].iloc[0]
+            with chip_cols[i % n_cols]:
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: #eef2f7;
+                        border: 1px solid #cfd8e3;
+                        border-radius: 999px;
+                        padding: 8px 10px;
+                        color: #111111;
+                        font-size: 13px;
+                        font-weight: 600;
+                        text-align: center;
+                        white-space: nowrap;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        margin-bottom: 6px;">
+                        {html.escape(donor_name)}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("Remove", key=f"remove_{donor_id}"):
+                    st.session_state.selected_ids.discard(donor_id)
+                    st.rerun()
+    else:
+        st.markdown("None selected")
 
 with map_col:
     st.subheader("Map")
@@ -415,6 +401,6 @@ with map_col:
         gifts_col=gifts_col,
         gift_date_col=gift_date_col,
         engagement_date_col=engagement_date_col,
-        selected_donor_ids=selected_ids,
+        selected_donor_ids=st.session_state.selected_ids,
     )
     st_folium(m, width=1100, height=720)
