@@ -246,6 +246,7 @@ def remove_donor_from_all_selected(donor_id):
     st.session_state.selected_ids_top_gifts.discard(donor_id)
     st.session_state.selected_ids_top_recent_gift.discard(donor_id)
     st.session_state.selected_ids_top_recent_engagement.discard(donor_id)
+    st.rerun()
 
 
 st.title("London donor map")
@@ -370,35 +371,42 @@ with table_col:
 
     st.markdown("### Selected donors")
 
-    if selected_ids:
-        selected_names = donors.loc[donors["_donor_id"].isin(selected_ids), "Full Name"].tolist()
+if selected_ids:
+    selected_ids_list = sorted(
+        selected_ids,
+        key=lambda did: donors.loc[donors["_donor_id"] == did, "Full Name"].iloc[0]
+    )
 
-        chip_cols = st.columns(min(3, len(selected_ids)))
-        for idx, donor_id in enumerate(list(selected_ids)):
-            donor_name = donors.loc[donors["_donor_id"] == donor_id, "Full Name"].iloc[0]
-            with chip_cols[idx % len(chip_cols)]:
-                st.markdown(
-                    f"""
-                    <div style="
-                        border: 1px solid #d0d7de;
-                        border-radius: 999px;
-                        padding: 8px 12px;
-                        margin-bottom: 8px;
-                        background: #f8f9fb;
-                        display: flex;
-                        align-items: center;
-                        justify-content: space-between;
-                        gap: 8px;">
-                        <span style="font-size: 13px;">{donor_name}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if st.button("Remove", key=f"remove_{donor_id}"):
-                    remove_donor_from_all_selected(donor_id)
-                    st.rerun()
-    else:
-        st.markdown("None selected")
+    chip_cols = st.columns(len(selected_ids_list))
+
+    for i, donor_id in enumerate(selected_ids_list):
+        donor_name = donors.loc[donors["_donor_id"] == donor_id, "Full Name"].iloc[0]
+
+        with chip_cols[i]:
+            st.markdown(
+                f"""
+                <div style="
+                    background: #eef2f7;
+                    border: 1px solid #cfd8e3;
+                    border-radius: 999px;
+                    padding: 8px 10px;
+                    color: #111111;
+                    font-size: 13px;
+                    font-weight: 600;
+                    text-align: center;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;">
+                    {donor_name}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if st.button("×", key=f"remove_{donor_id}", help=f"Remove {donor_name}"):
+                remove_donor_from_all_selected(donor_id)
+else:
+    st.markdown("None selected")
 
 with map_col:
     st.subheader("Map")
